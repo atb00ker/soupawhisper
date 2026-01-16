@@ -33,20 +33,23 @@ install_deps() {
     case $pm in
         apt)
             sudo apt update
-            sudo apt install -y alsa-utils xclip xdotool libnotify-bin
+            sudo apt install -y pipewire pipewire-pulse pulseaudio-utils alsa-utils wl-clipboard xclip wtype xdotool libnotify-bin
             ;;
         dnf)
-            sudo dnf install -y alsa-utils xclip xdotool libnotify
+            sudo dnf install -y pipewire pipewire-pulseaudio pulseaudio-utils alsa-utils wl-clipboard xclip wtype xdotool libnotify
             ;;
         pacman)
-            sudo pacman -S --noconfirm alsa-utils xclip xdotool libnotify
+            sudo pacman -S --noconfirm pipewire pipewire-pulse pulseaudio alsa-utils wl-clipboard xclip wtype xdotool libnotify
             ;;
         zypper)
-            sudo zypper install -y alsa-utils xclip xdotool libnotify-tools
+            sudo zypper install -y pipewire pipewire-pulseaudio pulseaudio-utils alsa-utils wl-clipboard xclip wtype xdotool libnotify-tools
             ;;
         *)
             echo "Unknown package manager. Please install manually:"
-            echo "  alsa-utils xclip xdotool libnotify"
+            echo "  Audio: pipewire pipewire-pulse pulseaudio-utils (or alsa-utils)"
+            echo "  Clipboard: wl-clipboard (Wayland) or xclip (X11)"
+            echo "  Typing: wtype (Wayland) or xdotool (X11)"
+            echo "  Other: libnotify"
             ;;
     esac
 }

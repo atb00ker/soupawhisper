@@ -6,7 +6,8 @@ A simple push-to-talk voice dictation tool for Linux using faster-whisper. Hold 
 
 - Python 3.10+
 - Poetry
-- Linux with X11 (ALSA audio)
+- Linux with X11 or Wayland
+- Audio: PipeWire/PulseAudio/ALSA
 
 ## Supported Distros
 
@@ -18,13 +19,14 @@ A simple push-to-talk voice dictation tool for Linux using faster-whisper. Hold 
 ## Installation
 
 ```bash
-git clone https://github.com/ksred/soupawhisper.git
+git clone https://github.com/atb00ker/soupawhisper.git
 cd soupawhisper
 chmod +x install.sh
 ./install.sh
 ```
 
 The installer will:
+
 1. Detect your package manager
 2. Install system dependencies
 3. Install Python dependencies via Poetry
@@ -34,14 +36,17 @@ The installer will:
 ### Manual Installation
 
 ```bash
-# Ubuntu/Debian
+# Ubuntu/Debian (modern systems with PipeWire + Wayland/X11)
+sudo apt install pipewire pipewire-pulse pulseaudio-utils wl-clipboard xclip wtype xdotool libnotify-bin
+
+# Ubuntu/Debian (older systems with ALSA + X11)
 sudo apt install alsa-utils xclip xdotool libnotify-bin
 
-# Fedora
-sudo dnf install alsa-utils xclip xdotool libnotify
+# Fedora (PipeWire default on 34+, supports Wayland)
+sudo dnf install pipewire pipewire-pulseaudio pulseaudio-utils wl-clipboard xclip wtype xdotool libnotify
 
 # Arch
-sudo pacman -S alsa-utils xclip xdotool libnotify
+sudo pacman -S pipewire pipewire-pulse pulseaudio wl-clipboard xclip wtype xdotool libnotify
 
 # Then install Python deps
 poetry install
@@ -59,6 +64,7 @@ sudo apt install libcudnn9-cuda-12
 ```
 
 Then edit `~/.config/soupawhisper/config.ini`:
+
 ```ini
 device = cuda
 compute_type = float16
@@ -73,6 +79,21 @@ poetry run python dictate.py
 - Hold **F12** to record
 - Release to transcribe → copies to clipboard and types into active input
 - Press **Ctrl+C** to quit (when running manually)
+
+### Model Downloading
+
+For a better experience, you can download the Whisper model before running the main script using the included standalone downloader. This allows you to see the download progress.
+
+```bash
+# Download using settings from config.ini
+poetry run python model_downloader.py
+
+# Download a specific model to CPU
+poetry run python model_downloader.py --model base.en --device cpu
+
+# Download a specific model to GPU (requires cuDNN)
+poetry run python model_downloader.py --model small --device cuda
+```
 
 ## Run as a systemd Service
 
@@ -117,9 +138,15 @@ auto_type = true
 
 # Show desktop notification
 notifications = true
+
+[audio]
+# Audio backend: auto (auto-detect), parecord, pw-record, or arecord
+# Default: auto (recommended)
+# backend = auto
 ```
 
 Create the config directory and file if it doesn't exist:
+
 ```bash
 mkdir -p ~/.config/soupawhisper
 cp /path/to/soupawhisper/config.example.ini ~/.config/soupawhisper/config.ini
@@ -128,34 +155,76 @@ cp /path/to/soupawhisper/config.example.ini ~/.config/soupawhisper/config.ini
 ## Troubleshooting
 
 **No audio recording:**
-```bash
-# Check your input device
-arecord -l
 
-# Test recording
+```bash
+# Check which audio backends are available
+which parecord pw-record arecord
+
+# Test PipeWire/PulseAudio recording (if parecord is available)
+parecord --rate=16000 --channels=1 --format=s16le test.wav
+# Press Ctrl+C after a few seconds
+aplay test.wav
+
+# Test native PipeWire recording (if pw-record is available)
+pw-record --rate=16000 --channels=1 --format=s16 test.wav
+# Press Ctrl+C after a few seconds
+aplay test.wav
+
+# Test ALSA recording (if arecord is available)
 arecord -d 3 test.wav && aplay test.wav
+
+# Check your input device (ALSA)
+arecord -l
+```
+
+**Force a specific audio backend:**
+
+Edit `~/.config/soupawhisper/config.ini` and add:
+
+```ini
+[audio]
+backend = parecord  # or pw-record, or arecord
+```
+
+**Wayland clipboard/typing not working:**
+
+```bash
+# Check which display server you're using
+echo $XDG_SESSION_TYPE  # Should show "wayland" or "x11"
+
+# Test Wayland clipboard (wl-clipboard)
+echo "test" | wl-copy
+wl-paste
+
+# Test Wayland typing (wtype) - opens in current focused window
+wtype "test text"
+
+# For X11, use xclip and xdotool instead
 ```
 
 **Permission issues with keyboard:**
+
 ```bash
 sudo usermod -aG input $USER
 # Then log out and back in
 ```
 
 **cuDNN errors with GPU:**
-```
+
+```text
 Unable to load any of {libcudnn_ops.so.9...}
 ```
+
 Install cuDNN 9 (see GPU Support section above) or switch to CPU mode.
 
 ## Model Sizes
 
 | Model | Size | Speed | Accuracy |
-|-------|------|-------|----------|
-| tiny.en | ~75MB | Fastest | Basic |
-| base.en | ~150MB | Fast | Good |
-| small.en | ~500MB | Medium | Better |
-| medium.en | ~1.5GB | Slower | Great |
-| large-v3 | ~3GB | Slowest | Best |
+| :--- | :--- | :--- | :--- |
+| **tiny.en** | ~75MB | Fastest | Basic |
+| **base.en** | ~150MB | Fast | Good |
+| **small.en** | ~500MB | Medium | Better |
+| **medium.en** | ~1.5GB | Slower | Great |
+| **large-v3** | ~3GB | Slowest | Best |
 
 For dictation, `base.en` or `small.en` is usually the sweet spot.

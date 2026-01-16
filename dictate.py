@@ -34,6 +34,7 @@ def load_config():
         "key": "f12",
         "auto_type": "true",
         "notifications": "true",
+        "audio_backend": "auto",
     }
 
     if CONFIG_PATH.exists():
@@ -42,14 +43,108 @@ def load_config():
     return {
         "model": config.get("whisper", "model", fallback=defaults["model"]),
         "device": config.get("whisper", "device", fallback=defaults["device"]),
-        "compute_type": config.get("whisper", "compute_type", fallback=defaults["compute_type"]),
+        "compute_type": config.get(
+            "whisper", "compute_type", fallback=defaults["compute_type"]
+        ),
         "key": config.get("hotkey", "key", fallback=defaults["key"]),
         "auto_type": config.getboolean("behavior", "auto_type", fallback=True),
         "notifications": config.getboolean("behavior", "notifications", fallback=True),
+        "audio_backend": config.get(
+            "audio", "backend", fallback=defaults["audio_backend"]
+        ),
     }
 
 
 CONFIG = load_config()
+
+
+def build_arecord_command(output_file):
+    """Build arecord command with required audio format."""
+    return [
+        "arecord",
+        "-f",
+        "S16_LE",  # Format: 16-bit little-endian
+        "-r",
+        "16000",  # Sample rate: 16kHz (what Whisper expects)
+        "-c",
+        "1",  # Mono
+        "-t",
+        "wav",
+        output_file,
+    ]
+
+
+def build_parecord_command(output_file):
+    """Build parecord command with required audio format."""
+    return [
+        "parecord",
+        "--rate=16000",
+        "--channels=1",
+        "--format=s16le",
+        "--file-format=wav",
+        output_file,
+    ]
+
+
+def build_pwrecord_command(output_file):
+    """Build pw-record command with required audio format."""
+    return ["pw-record", "--rate=16000", "--channels=1", "--format=s16", output_file]
+
+
+def detect_audio_backend():
+    """Detect available audio recording backend with optional config override."""
+    config_backend = CONFIG.get("audio_backend", "auto")
+
+    # Check for config override
+    if config_backend != "auto":
+        backend_map = {
+            "parecord": ("parecord", build_parecord_command),
+            "pw-record": ("pw-record", build_pwrecord_command),
+            "arecord": ("arecord", build_arecord_command),
+        }
+        if config_backend in backend_map:
+            cmd_name, builder = backend_map[str(config_backend)]
+            if subprocess.run(["which", cmd_name], capture_output=True).returncode == 0:
+                return (cmd_name, builder)
+            print(
+                f"Warning: Configured backend '{config_backend}' not found, using auto-detection"
+            )
+
+    # Auto-detection priority: parecord > pw-record > arecord
+    for cmd_name, builder in [
+        ("parecord", build_parecord_command),
+        ("pw-record", build_pwrecord_command),
+        ("arecord", build_arecord_command),
+    ]:
+        if subprocess.run(["which", cmd_name], capture_output=True).returncode == 0:
+            return (cmd_name, builder)
+
+    return (None, None)
+
+
+AUDIO_BACKEND, AUDIO_COMMAND_BUILDER = detect_audio_backend()
+
+
+def detect_clipboard_tool():
+    """Detect available clipboard tool (Wayland or X11)."""
+    # Priority: wl-copy (Wayland) > xclip (X11)
+    for cmd in ["wl-copy", "xclip"]:
+        if subprocess.run(["which", cmd], capture_output=True).returncode == 0:
+            return cmd
+    return None
+
+
+def detect_typing_tool():
+    """Detect available typing tool (Wayland or X11)."""
+    # Priority: wtype (Wayland) > ydotool (Wayland) > xdotool (X11)
+    for cmd in ["wtype", "ydotool", "xdotool"]:
+        if subprocess.run(["which", cmd], capture_output=True).returncode == 0:
+            return cmd
+    return None
+
+
+CLIPBOARD_TOOL = detect_clipboard_tool()
+TYPING_TOOL = detect_typing_tool()
 
 
 def get_hotkey(key_name):
@@ -82,15 +177,45 @@ class Dictation:
         self.model_error = None
         self.running = True
 
+        # Check audio backend availability
+        if AUDIO_BACKEND is None:
+            print("ERROR: No audio recording backend found!")
+            print("Please install one of: parecord, pw-record, or arecord")
+            sys.exit(1)
+
+        # Check clipboard tool availability
+        if CLIPBOARD_TOOL is None:
+            print("ERROR: No clipboard tool found!")
+            print("Please install one of: wl-copy (Wayland) or xclip (X11)")
+            sys.exit(1)
+
+        # Check typing tool availability if auto-typing is enabled
+        if AUTO_TYPE and TYPING_TOOL is None:
+            print("ERROR: No typing tool found!")
+            print(
+                "Please install one of: wtype (Wayland), ydotool (Wayland), or xdotool (X11)"
+            )
+            sys.exit(1)
+
         # Load model in background
+        print(f"Audio backend: {AUDIO_BACKEND}")
+        print(f"Clipboard tool: {CLIPBOARD_TOOL}")
+        if AUTO_TYPE:
+            print(f"Typing tool: {TYPING_TOOL}")
         print(f"Loading Whisper model ({MODEL_SIZE})...")
         threading.Thread(target=self._load_model, daemon=True).start()
 
     def _load_model(self):
         try:
-            self.model = WhisperModel(MODEL_SIZE, device=DEVICE, compute_type=COMPUTE_TYPE)
+            self.model = WhisperModel(
+                MODEL_SIZE, device=DEVICE, compute_type=COMPUTE_TYPE
+            )
             self.model_loaded.set()
-            hotkey_name = HOTKEY.name if hasattr(HOTKEY, 'name') else HOTKEY.char
+            hotkey_name = (
+                HOTKEY.name
+                if hasattr(HOTKEY, "name") and HOTKEY.name
+                else (getattr(HOTKEY, "char", None) or str(HOTKEY))
+            )
             print(f"Model loaded. Ready for dictation!")
             print(f"Hold [{hotkey_name}] to record, release to transcribe.")
             print("Press Ctrl+C to quit.")
@@ -99,7 +224,9 @@ class Dictation:
             self.model_loaded.set()
             print(f"Failed to load model: {e}")
             if "cudnn" in str(e).lower() or "cuda" in str(e).lower():
-                print("Hint: Try setting device = cpu in your config, or install cuDNN.")
+                print(
+                    "Hint: Try setting device = cpu in your config, or install cuDNN."
+                )
 
     def notify(self, title, message, icon="dialog-information", timeout=2000):
         """Send a desktop notification."""
@@ -108,14 +235,18 @@ class Dictation:
         subprocess.run(
             [
                 "notify-send",
-                "-a", "SoupaWhisper",
-                "-i", icon,
-                "-t", str(timeout),
-                "-h", "string:x-canonical-private-synchronous:soupawhisper",
+                "-a",
+                "SoupaWhisper",
+                "-i",
+                icon,
+                "-t",
+                str(timeout),
+                "-h",
+                "string:x-canonical-private-synchronous:soupawhisper",
                 title,
-                message
+                message,
             ],
-            capture_output=True
+            capture_output=True,
         )
 
     def start_recording(self):
@@ -126,22 +257,28 @@ class Dictation:
         self.temp_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
         self.temp_file.close()
 
-        # Record using arecord (ALSA) - works on most Linux systems
+        # Build command for detected audio backend
+        if AUDIO_COMMAND_BUILDER:
+            command = AUDIO_COMMAND_BUILDER(self.temp_file.name)
+        else:
+            print("ERROR: Audio command builder not found!")
+            return
+
         self.record_process = subprocess.Popen(
-            [
-                "arecord",
-                "-f", "S16_LE",  # Format: 16-bit little-endian
-                "-r", "16000",   # Sample rate: 16kHz (what Whisper expects)
-                "-c", "1",       # Mono
-                "-t", "wav",
-                self.temp_file.name
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
+            command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
-        print("Recording...")
-        hotkey_name = HOTKEY.name if hasattr(HOTKEY, 'name') else HOTKEY.char
-        self.notify("Recording...", f"Release {hotkey_name.upper()} when done", "audio-input-microphone", 30000)
+        print(f"Recording with {AUDIO_BACKEND}...")
+        hotkey_name = (
+            HOTKEY.name
+            if hasattr(HOTKEY, "name") and HOTKEY.name
+            else (getattr(HOTKEY, "char", None) or str(HOTKEY))
+        )
+        self.notify(
+            "Recording...",
+            f"Release {hotkey_name.upper()} when done",
+            "audio-input-microphone",
+            30000,
+        )
 
     def stop_recording(self):
         if not self.recording:
@@ -155,7 +292,9 @@ class Dictation:
             self.record_process = None
 
         print("Transcribing...")
-        self.notify("Transcribing...", "Processing your speech", "emblem-synchronizing", 30000)
+        self.notify(
+            "Transcribing...", "Processing your speech", "emblem-synchronizing", 30000
+        )
 
         # Wait for model if not loaded yet
         self.model_loaded.wait()
@@ -167,6 +306,10 @@ class Dictation:
 
         # Transcribe
         try:
+            if not self.model or not self.temp_file:
+                print("Error: Model or temp file not initialized")
+                return
+
             segments, info = self.model.transcribe(
                 self.temp_file.name,
                 beam_size=5,
@@ -176,22 +319,37 @@ class Dictation:
             text = " ".join(segment.text.strip() for segment in segments)
 
             if text:
-                # Copy to clipboard using xclip
-                process = subprocess.Popen(
-                    ["xclip", "-selection", "clipboard"],
-                    stdin=subprocess.PIPE
-                )
-                process.communicate(input=text.encode())
+                # Copy to clipboard
+                if CLIPBOARD_TOOL == "wl-copy":
+                    process = subprocess.Popen(["wl-copy"], stdin=subprocess.PIPE)
+                    process.communicate(input=text.encode())
+                else:  # xclip
+                    process = subprocess.Popen(
+                        ["xclip", "-selection", "clipboard"], stdin=subprocess.PIPE
+                    )
+                    process.communicate(input=text.encode())
 
                 # Type it into the active input field
                 if AUTO_TYPE:
-                    subprocess.run(["xdotool", "type", "--clearmodifiers", text])
+                    if TYPING_TOOL == "wtype":
+                        subprocess.run(["wtype", text])
+                    elif TYPING_TOOL == "ydotool":
+                        subprocess.run(["ydotool", "type", text])
+                    else:  # xdotool
+                        subprocess.run(["xdotool", "type", "--clearmodifiers", text])
 
                 print(f"Copied: {text}")
-                self.notify("Copied!", text[:100] + ("..." if len(text) > 100 else ""), "emblem-ok-symbolic", 3000)
+                self.notify(
+                    "Copied!",
+                    text[:100] + ("..." if len(text) > 100 else ""),
+                    "emblem-ok-symbolic",
+                    3000,
+                )
             else:
                 print("No speech detected")
-                self.notify("No speech detected", "Try speaking louder", "dialog-warning", 2000)
+                self.notify(
+                    "No speech detected", "Try speaking louder", "dialog-warning", 2000
+                )
 
         except Exception as e:
             print(f"Error: {e}")
@@ -216,8 +374,7 @@ class Dictation:
 
     def run(self):
         with keyboard.Listener(
-            on_press=self.on_press,
-            on_release=self.on_release
+            on_press=self.on_press, on_release=self.on_release
         ) as listener:
             listener.join()
 
@@ -226,19 +383,50 @@ def check_dependencies():
     """Check that required system commands are available."""
     missing = []
 
-    for cmd in ["arecord", "xclip"]:
-        if subprocess.run(["which", cmd], capture_output=True).returncode != 0:
-            pkg = "alsa-utils" if cmd == "arecord" else cmd
-            missing.append((cmd, pkg))
+    # Check for any audio backend
+    has_audio = any(
+        subprocess.run(["which", cmd], capture_output=True).returncode == 0
+        for cmd in ["parecord", "pw-record", "arecord"]
+    )
+    if not has_audio:
+        missing.append(("audio backend", "none"))
 
+    # Check for clipboard tool
+    has_clipboard = any(
+        subprocess.run(["which", cmd], capture_output=True).returncode == 0
+        for cmd in ["wl-copy", "xclip"]
+    )
+    if not has_clipboard:
+        missing.append(("clipboard tool", "none"))
+
+    # Check for typing tool if auto-typing is enabled
     if AUTO_TYPE:
-        if subprocess.run(["which", "xdotool"], capture_output=True).returncode != 0:
-            missing.append(("xdotool", "xdotool"))
+        has_typing = any(
+            subprocess.run(["which", cmd], capture_output=True).returncode == 0
+            for cmd in ["wtype", "ydotool", "xdotool"]
+        )
+        if not has_typing:
+            missing.append(("typing tool", "none"))
 
     if missing:
         print("Missing dependencies:")
         for cmd, pkg in missing:
-            print(f"  {cmd} - install with: sudo apt install {pkg}")
+            if cmd == "audio backend":
+                print("  Audio recording backend - install one of:")
+                print("    parecord: sudo apt install pulseaudio-utils (Ubuntu/Debian)")
+                print("    pw-record: sudo apt install pipewire-bin (Ubuntu/Debian)")
+                print("    arecord: sudo apt install alsa-utils (Ubuntu/Debian)")
+            elif cmd == "clipboard tool":
+                print("  Clipboard tool - install one of:")
+                print("    wl-copy: sudo apt install wl-clipboard (Wayland)")
+                print("    xclip: sudo apt install xclip (X11)")
+            elif cmd == "typing tool":
+                print("  Typing tool - install one of:")
+                print("    wtype: sudo apt install wtype (Wayland)")
+                print("    ydotool: sudo apt install ydotool (Wayland)")
+                print("    xdotool: sudo apt install xdotool (X11)")
+            else:
+                print(f"  {cmd} - install with: sudo apt install {pkg}")
         sys.exit(1)
 
 
@@ -247,9 +435,7 @@ def main():
         description="SoupaWhisper - Push-to-talk voice dictation"
     )
     parser.add_argument(
-        "-v", "--version",
-        action="version",
-        version=f"SoupaWhisper {__version__}"
+        "-v", "--version", action="version", version=f"SoupaWhisper {__version__}"
     )
     parser.parse_args()
 
