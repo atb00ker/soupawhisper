@@ -14,7 +14,7 @@ The entire application logic resides in `dictate.py` (270 lines). Key components
 
 - **Dictation class**: Main application controller that manages the recording lifecycle, model loading, and keyboard listener
 - **Model loading**: Happens asynchronously on startup in a background thread to avoid blocking the UI
-- **Recording pipeline**: Uses auto-detected audio backend (parecord/pw-record/arecord) for audio capture → temporary WAV file → faster-whisper transcription → auto-detected clipboard tool (wl-copy/xclip) + typing tool (wtype/ydotool/xdotool)
+- **Recording pipeline**: Uses auto-detected audio backend (parecord/pw-record/arecord) for audio capture → temporary WAV file → faster-whisper transcription → auto-detected clipboard tool (wl-copy/xclip) + typing tool (wtype/dotool/xdotool)
 - **Configuration**: INI-based config loaded from `~/.config/soupawhisper/config.ini` with fallback defaults
 
 ### Key Patterns
@@ -26,7 +26,7 @@ The entire application logic resides in `dictate.py` (270 lines). Key components
 
 ### External Dependencies
 
-- **System tools** (checked in `check_dependencies()`): Audio backend (parecord, pw-record, or arecord - auto-detected), clipboard tool (wl-copy or xclip - auto-detected), typing tool (wtype, ydotool, or xdotool - auto-detected), notify-send
+- **System tools** (checked in `check_dependencies()`): Audio backend (parecord, pw-record, or arecord - auto-detected), clipboard tool (wl-copy or xclip - auto-detected), typing tool (wtype, dotool, or xdotool - auto-detected), notify-send
 - **Python packages**: faster-whisper (Whisper inference), pynput (keyboard hooks)
 - **Runtime requirements**: X11 or Wayland display server, audio backend (PipeWire/PulseAudio/ALSA)
 
@@ -107,7 +107,7 @@ Model loading errors are caught at line 97-102. Special cuDNN error hints added 
 - **Audio format**: Hardcoded to 16kHz mono S16_LE - Whisper's expected format
 - **Audio backends**: Auto-detects parecord > pw-record > arecord in priority order
 - **Clipboard tools**: Auto-detects wl-copy > xclip in priority order
-- **Typing tools**: Auto-detects wtype > ydotool > xdotool in priority order
+- **Typing tools**: Auto-detects wtype > dotool > xdotool in priority order
 - **Temporary files**: Uses tempfile.NamedTemporaryFile for recordings, cleaned up in finally block
 
 ## Installation Script
@@ -168,23 +168,31 @@ Priority order: **wl-copy** > **xclip**
 
 ### Typing Tools
 
-Priority order: **wtype** > **ydotool** > **xdotool**
+Priority order: **wtype** > **dotool** > **xdotool**
 
 1. **wtype** (Wayland) - preferred
    - Package: wtype
    - Command: `wtype <text>`
-   - Works on: Wayland compositors
+   - Works on: Wayland compositors with virtual-keyboard protocol
    - Lightweight, no daemon required
+   - Note: Does NOT work on KDE Plasma Wayland (KWin doesn't support virtual-keyboard protocol)
 
-2. **ydotool** (Wayland) - secondary
-   - Package: ydotool
-   - Command: `ydotool type <text>`
-   - Works on: Wayland compositors
-   - Requires ydotoold daemon running
+2. **dotool** (Wayland) - best for KDE Plasma
+   - Package: cargo install dotool
+   - Command: `echo "type <text>" | dotool`
+   - Works on: All Wayland compositors via /dev/uinput
+   - Requires: dotoold daemon running (no root needed!)
+   - Note: Application checks if daemon is running; skips if not available
+   - Setup: `dotoold &` or `systemctl --user enable --now dotoold`
+   - Advantage: Works on KDE Plasma Wayland without root
 
 3. **xdotool** (X11) - fallback
    - Package: xdotool
    - Command: `xdotool type --clearmodifiers <text>`
-   - Works on: X11 display servers
+   - Works on: X11 display servers (XWayland apps only on Wayland)
 
-Detection logic is in `detect_clipboard_tool()` (line 128) and `detect_typing_tool()` (line 137). The application automatically uses the detected tools in `stop_recording()` method.
+Detection logic is in `detect_clipboard_tool()` (line 128) and `detect_typing_tool()` (line 153). The application automatically uses the detected tools in `stop_recording()` method.
+
+**Special handling for KDE Plasma Wayland:** The `is_kwin_wayland()` function (line 145) detects if running under KDE Plasma Wayland (KWin compositor). KWin doesn't fully support the virtual-keyboard protocol that wtype uses. When detected, the application checks for dotool first (which works via /dev/uinput), then falls back to xdotool through XWayland if not available. This provides the best experience on KDE Plasma with clear guidance if only xdotool is available.
+
+**Special handling for dotool:** The `is_dotoold_running()` function (line 137) checks if the dotoold daemon is running using `pgrep`. If dotool is installed but the daemon isn't running, the tool detection skips it and continues to the next option. dotool doesn't require root permissions, making it ideal for KDE Plasma Wayland.

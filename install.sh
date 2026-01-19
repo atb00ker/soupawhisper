@@ -33,25 +33,33 @@ install_deps() {
     case $pm in
         apt)
             sudo apt update
-            sudo apt install -y pipewire pipewire-pulse pulseaudio-utils alsa-utils wl-clipboard xclip wtype xdotool libnotify-bin
+            sudo apt install -y pipewire pipewire-pulse pulseaudio-utils alsa-utils wl-clipboard xclip wtype xdotool libnotify-bin cargo
             ;;
         dnf)
-            sudo dnf install -y pipewire pipewire-pulseaudio pulseaudio-utils alsa-utils wl-clipboard xclip wtype xdotool libnotify
+            sudo dnf install -y pipewire pipewire-pulseaudio pulseaudio-utils alsa-utils wl-clipboard xclip wtype xdotool libnotify cargo
             ;;
         pacman)
-            sudo pacman -S --noconfirm pipewire pipewire-pulse pulseaudio alsa-utils wl-clipboard xclip wtype xdotool libnotify
+            sudo pacman -S --noconfirm pipewire pipewire-pulse pulseaudio alsa-utils wl-clipboard xclip wtype xdotool libnotify rust
             ;;
         zypper)
-            sudo zypper install -y pipewire pipewire-pulseaudio pulseaudio-utils alsa-utils wl-clipboard xclip wtype xdotool libnotify-tools
+            sudo zypper install -y pipewire pipewire-pulseaudio pulseaudio-utils alsa-utils wl-clipboard xclip wtype xdotool libnotify-tools cargo
             ;;
         *)
             echo "Unknown package manager. Please install manually:"
             echo "  Audio: pipewire pipewire-pulse pulseaudio-utils (or alsa-utils)"
             echo "  Clipboard: wl-clipboard (Wayland) or xclip (X11)"
-            echo "  Typing: wtype (Wayland) or xdotool (X11)"
+            echo "  Typing: wtype (Wayland), dotool (cargo install, best for KDE), or xdotool (X11)"
             echo "  Other: libnotify"
             ;;
     esac
+
+    echo ""
+    echo "Installing dotool via cargo (for KDE Plasma Wayland support)..."
+    if command -v cargo &> /dev/null; then
+        cargo install dotool || echo "Warning: dotool installation failed. You can install it manually later."
+    else
+        echo "Warning: cargo not found. Install rust/cargo to use dotool."
+    fi
 }
 
 # Install Python dependencies
@@ -92,6 +100,9 @@ install_service() {
     # Get current display settings
     local display="${DISPLAY:-:0}"
     local xauthority="${XAUTHORITY:-$HOME/.Xauthority}"
+    local wayland_display="${WAYLAND_DISPLAY:-wayland-0}"
+    local xdg_runtime_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+    local dbus_session_bus_address="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$xdg_runtime_dir/bus}"
     local venv_path="$SCRIPT_DIR/.venv"
 
     # Check if venv exists
@@ -103,17 +114,22 @@ install_service() {
 [Unit]
 Description=SoupaWhisper Voice Dictation
 After=graphical-session.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
 WorkingDirectory=$SCRIPT_DIR
-ExecStart=$venv_path/bin/python $SCRIPT_DIR/dictate.py
+ExecStart=$venv_path/bin/python $SCRIPT_DIR/dictate.py --trigger hotkey
 Restart=on-failure
 RestartSec=5
 
-# X11 display access
+# X11 and Wayland display access
 Environment=DISPLAY=$display
 Environment=XAUTHORITY=$xauthority
+Environment=WAYLAND_DISPLAY=$wayland_display
+Environment=XDG_RUNTIME_DIR=$xdg_runtime_dir
+Environment=DBUS_SESSION_BUS_ADDRESS=$dbus_session_bus_address
 
 [Install]
 WantedBy=default.target

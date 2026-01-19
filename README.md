@@ -11,10 +11,7 @@ A simple push-to-talk voice dictation tool for Linux using faster-whisper. Hold 
 
 ## Supported Distros
 
-- Ubuntu / Pop!_OS / Debian (apt)
-- Fedora (dnf)
-- Arch Linux (pacman)
-- openSUSE (zypper)
+- KDE Plasma / Debian (apt)
 
 ## Installation
 
@@ -50,6 +47,28 @@ sudo pacman -S pipewire pipewire-pulse pulseaudio wl-clipboard xclip wtype xdoto
 
 # Then install Python deps
 poetry install
+```
+
+**Note for KDE Plasma Wayland users:**
+
+For auto-typing to work with native Wayland apps on KDE, install **dotool**:
+
+```bash
+# Install Rust/Cargo if not already installed
+sudo apt install cargo
+
+# Add your user to the input group (required for /dev/uinput access)
+sudo usermod -aG input $USER
+# Log out and log back in for the group change to take effect
+
+# Install dotool
+cargo install dotool
+
+# Start dotoold daemon (doesn't require root!)
+dotoold &
+
+# Or enable as systemd user service
+systemctl --user enable --now dotoold
 ```
 
 ### GPU Support (Optional)
@@ -112,6 +131,30 @@ systemctl --user restart soupawhisper   # Restart
 systemctl --user status soupawhisper    # Status
 journalctl --user -u soupawhisper -f    # View logs
 ```
+
+### If the service can't access your display / hotkey fails
+
+If you see errors like `failed to acquire X connection` / `Authorization required` from `pynput`, your systemd user service isn't inheriting the right GUI session environment (X11/Wayland).
+
+You have two options:
+
+- **Option A (recommended for reliability): signal trigger mode**
+
+Run SoupaWhisper without a GUI keyboard hook and toggle recording via `SIGUSR1`:
+
+```bash
+# Update ExecStart to include:
+#   ... dictate.py --trigger signal
+systemctl --user daemon-reload
+systemctl --user restart soupawhisper
+
+# Toggle recording (start/stop+transcribe)
+systemctl --user kill -s USR1 soupawhisper
+```
+
+- **Option B: fix GUI environment for the service**
+
+Ensure the unit has correct values for `DISPLAY`/`XAUTHORITY` (X11) and `XDG_RUNTIME_DIR`/`DBUS_SESSION_BUS_ADDRESS` (common for Wayland + notifications). Re-run `./install.sh` or edit `~/.config/systemd/user/soupawhisper.service`.
 
 ## Configuration
 
@@ -186,6 +229,21 @@ Edit `~/.config/soupawhisper/config.ini` and add:
 backend = parecord  # or pw-record, or arecord
 ```
 
+**KDE Plasma Wayland - Auto-typing not working:**
+
+KDE Plasma Wayland (KWin) doesn't support the virtual-keyboard protocol that wtype uses. xdotool only works with X11 apps via XWayland.
+
+**Solution:** Install dotool for native Wayland app support:
+
+```bash
+# Install dotool (no root required!)
+cargo install dotool
+dotoold &
+
+# Then restart SoupaWhisper
+systemctl --user restart soupawhisper
+```
+
 **Wayland clipboard/typing not working:**
 
 ```bash
@@ -196,8 +254,19 @@ echo $XDG_SESSION_TYPE  # Should show "wayland" or "x11"
 echo "test" | wl-copy
 wl-paste
 
-# Test Wayland typing (wtype) - opens in current focused window
+# Test Wayland typing tools
+# Option 1: wtype (simple, no daemon required)
 wtype "test text"
+
+# Option 2: dotool (no root required, best for KDE)
+# First, check if daemon is running
+pgrep dotoold
+
+# If not running, start it
+dotoold &
+
+# Then test
+echo "type test text" | dotool
 
 # For X11, use xclip and xdotool instead
 ```
